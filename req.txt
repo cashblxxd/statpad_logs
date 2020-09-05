@@ -1,0 +1,7 @@
+gspread
+oauth2client
+python-telegram-bot
+boto3
+schedule
+phonenumbers
+validate_email
