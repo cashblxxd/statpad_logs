@@ -296,9 +296,9 @@ def texter(update, context):
 					print(e)
 					update.message.reply_text('Неверный формат номера, попробуйте ещё раз')
 		elif status == "city":
-			context.bot_data[uid]["city"] = update.callback_query.data
+			context.bot_data[uid]["city"] = update.message.text
 			context.bot_data[uid]["status"] = "place"
-			update.callback_query.edit_message_text('Введите, пожалуйста, место замера')
+			update.message.reply_text('Введите, пожалуйста, место замера')
 		elif status == "place":
 			context.bot_data[uid]["place"] = update.message.text
 			context.bot_data[uid]["status"] = "ready"
@@ -328,6 +328,12 @@ def texter(update, context):
 			context.bot_data[uid]["markers"] = text.split("\n")
 			context.bot_data[uid]["status"] = "ready"
 			update.message.reply_text('Метрики успешно обновлены', reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])), one_time_keyboard=True)
+	elif status == "message":
+		text = update.message.text
+		update.message.reply_text('Сообщение разослано')
+		for i in context.bot_data:
+			if "status" in i:
+				context.bot.send_message(i, text)
 	else:
 		text = update.message.text
 		if text == "Таблица":
@@ -506,6 +512,28 @@ def save_data(update, context):
 		update.message.reply_text("Вы - не администратор")
 
 
+def message(update, context):
+	global LOADED_DUMP
+	if not LOADED_DUMP:
+		with open("bot_data.json", encoding="utf-8") as f:
+			s = load(f)
+			for i in s:
+				context.bot_data[i] = s[i]
+			LOADED_DUMP = True
+	uid = str(update.message.chat_id)
+	if uid not in context.bot_data:
+		context.bot_data[uid] = {}
+		context.bot_data[uid]["status"] = "name"
+		context.bot_data[uid]["last_updated_location"] = str(datetime.now() - timedelta(hours=1))
+		update.message.reply_text('Нужно зарегистрироваться. Введите, пожалуйста, ФИО', reply_markup=ReplyKeyboardRemove())
+		return
+	if uid in ["814961422", "106052"]:
+		context.bot_data[uid]["status"] = "message"
+		update.message.reply_text('Пожалуйста, введите сообщение')
+	else:
+		update.message.reply_text("Вы - не администратор")
+
+
 def save_jobs(update, context):
 	global JOBS_ALLOWED
 	if str(update.message.chat_id) in ["814961422", "106052"]:
@@ -556,7 +584,7 @@ def main():
 	dp.add_handler(CommandHandler("save_jobs", save_jobs))
 	dp.add_handler(CommandHandler("stop_updaters", stop_updaters))
 	dp.add_handler(CommandHandler("resume_updaters", resume_updaters))
-	dp.add_handler(CallbackQueryHandler(button))
+	dp.add_handler(CommandHandler("message", message))
 	dp.add_handler(MessageHandler(Filters.all, texter))
 	updater.start_polling()
 	schedule.every().minute.do(push_metrics_job).run()
