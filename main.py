@@ -520,10 +520,6 @@ def save_data(update, context):
 			for i in s:
 				if "sh" in s[i]:
 					s[i]["sh"] = ""
-				if "metrics_worksheet" in s[i]:
-					s[i]["metrics_worksheet"] = ""
-				if "locations_worksheet" in s[i]:
-					s[i]["locations_worksheet"] = ""
 			dump(context.bot_data, f, ensure_ascii=False, indent=4)
 			update.message.reply_text("Данные успешно сохранены", reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[str(update.message.chat_id)]["markers"])), one_time_keyboard=True)
 	else:
