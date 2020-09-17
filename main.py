@@ -2,10 +2,8 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from pprint import pprint
 import traceback
-from telegram.ext import CallbackQueryHandler, PicklePersistence, Updater, CommandHandler,\
-	MessageHandler, Filters
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup,\
-	KeyboardButton, ReplyKeyboardMarkup
+from telegram.ext import CallbackQueryHandler, PicklePersistence, Updater, CommandHandler, MessageHandler, Filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ParseMode, ReplyKeyboardRemove
 from time import sleep
 import random
 import string
@@ -16,18 +14,17 @@ import os
 import signal
 import queue
 import schedule
-from json import load
+from json import load, dump
 import phonenumbers
-from validate_email import validate_email
 from sys import exit
+import os
 
 
 s3_queue = queue.Queue()
-sheets_queue = queue.Queue()
+metrics_queue = queue.Queue()
 data_queue = queue.Queue()
-incidents_queue = queue.Queue()
 locations_queue = queue.Queue()
-confirmations_queue = queue.Queue()
+incidents_queue = queue.Queue()
 s3_client = boto3.client('s3')
 confirmation_numbers = set(range(100, 1000000))
 
@@ -38,48 +35,61 @@ def upload_file(file_name):
 	return True
 
 
-my_persistence = PicklePersistence(filename='database.noext')
-admin_gspread_link = "https://docs.google.com/spreadsheets/d/1lRuxnrYkb6_QHvdEPHyLeFea3kIvF6-lPOMTOXsJljo/edit?usp=sharing"
-with open("client_secret.json", encoding="utf-8") as f:
+with open("job_data.json", "r", encoding="utf-8") as f:
 	s = load(f)
-	GSPREAD_ACCOUNT_EMAIL = s["client_email"]
+	s3_queue.queue = queue.deque(s["s3_queue"])
+	metrics_queue.queue = queue.deque(s["metrics_queue"])
+	data_queue.queue = queue.deque(s["data_queue"])
+	locations_queue.queue = queue.deque(s["locations_queue"])
+	incidents_queue.queue = queue.deque(s["incidents_queue"])
+
+
+LOADED_DUMP = False
+JOBS_ALLOWED = True
+GSPREAD_EMAIL = "visior-bot@active-area-251510.iam.gserviceaccount.com"
 gc = gspread.authorize(ServiceAccountCredentials.from_json_keyfile_name('client_secret.json', ['https://spreadsheets.google.com/feeds']))
+admin_gspread_link = "https://docs.google.com/spreadsheets/d/1oBuw3eANvCYhPjalKgRvJXElSZ5IjUssY58yMhBK_n4/edit?usp=sharing"
 sh = gc.open_by_url(admin_gspread_link)
-name = "LOGS"
+name = "METRICS"
 try:
-	worksheet = sh.worksheet(name)
+	metrics_worksheet = sh.worksheet(name)
 except Exception as e:
 	sh.add_worksheet(title=name, rows="5", cols="20")
-	worksheet = sh.worksheet(name)
-	worksheet.insert_row(["Дата и время", "ID пользователя", "Событие", "Участок"], 1)
+	metrics_worksheet = sh.worksheet(name)
+	metrics_worksheet.insert_row(["ID пользователя", "Дата и время", "Метрика", "+", "-", "Участок", "Город"], 1)
 name = "USERDATA"
 try:
 	data_worksheet = sh.worksheet(name)
 except Exception as e:
 	sh.add_worksheet(title=name, rows="5", cols="20")
 	data_worksheet = sh.worksheet(name)
-	data_worksheet.insert_row(["ID пользователя", "ФИО", "Номер телефона", "E-Mail", "Серия и номер паспорта", "Город", "Участок"], 1)
-name = "INCIDENTS"
-try:
-	incidents_worksheet = sh.worksheet(name)
-except Exception as e:
-	sh.add_worksheet(title=name, rows="5", cols="20")
-	incidents_worksheet = sh.worksheet(name)
-	incidents_worksheet.insert_row(["Дата и время", "ID пользователя", "Участок", "Город", "Ссылка", "Тип вложения"], 1)
+	data_worksheet.insert_row(["ID пользователя", "Дата регистрации", "ФИО", "Номер телефона", "Город", "Участок"], 1)
 name = "LOCATIONS"
 try:
 	locations_worksheet = sh.worksheet(name)
 except Exception as e:
 	sh.add_worksheet(title=name, rows="5", cols="20")
 	locations_worksheet = sh.worksheet(name)
-	locations_worksheet.insert_row(["ID пользователя", "Широта", "Долгота", "Место", "Город"], 1)
-name = "CONFIRMATIONS"
+	locations_worksheet.insert_row(["ID пользователя", "Дата и время", "Широта", "Долгота", "Место", "Город"], 1)
+name = "INCIDENTS"
 try:
-	confirmations_worksheet = sh.worksheet(name)
+	incidents_worksheet = sh.worksheet(name)
 except Exception as e:
 	sh.add_worksheet(title=name, rows="5", cols="20")
-	confirmations_worksheet = sh.worksheet(name)
-	confirmations_worksheet.insert_row(["ID пользователя", "Дата и время", "Файл", "Номер подтверждения", "Место", "Город"], 1)
+	incidents_worksheet = sh.worksheet(name)
+	incidents_worksheet.insert_row(["ID пользователя", "Дата и время", "Файл", "Номер подтверждения", "Место", "Город"], 1)
+
+
+my_persistence = PicklePersistence(filename='database.noext')
+
+
+def get_menu(markers):
+	print(markers)
+	return [[KeyboardButton(i + "+"), KeyboardButton(i + "-")] for i in markers] + [
+		[KeyboardButton("Создать инцидент")],
+		[KeyboardButton("Таблица")],
+		[KeyboardButton("Изменить метрики")]
+	]
 
 
 def push_s3_job():
@@ -90,6 +100,7 @@ def push_s3_job():
 		print(file_name)
 		try:
 			response = s3_client.upload_file(file_name, "statpad-logs", file_name, ExtraArgs={'ACL':'public-read'})
+			os.remove(file_name)
 			print("success", file_name)
 		except ClientError as e:
 			print(e)
@@ -98,26 +109,57 @@ def push_s3_job():
 	print("done, s3 empty")
 
 
-def push_sheets_job():
-	print("gotta push sheets")
-	while not sheets_queue.empty():
-		print("getting... sheets")
-		row = sheets_queue.get()
+def push_metrics_job():
+	print("gotta push metrics")
+	pushes = dict()
+	while JOBS_ALLOWED and not metrics_queue.empty():
+		print("getting... metrics")
+		row = metrics_queue.get()
 		print("got", row)
+		sheet_link, data = row
+		uid, marker, plus, minus, place, city = data
+		idd = uid + "_" + marker
+		if idd in pushes:
+			pushes[idd]["+"] += plus
+			pushes[idd]["-"] += minus
+		else:
+			pushes[idd] = {
+				"uid": uid,
+				"marker": marker,
+				"+": plus,
+				"-": minus,
+				"place": place,
+				"city": city,
+				"sheet_link": sheet_link
+			}
+	for i in pushes:
+		data_row = [pushes[i]["marker"], pushes[i]["+"], pushes[i]["-"], pushes[i]["place"], pushes[i]["city"]]
 		try:
-			worksheet.insert_row(row, 2)
+			print(metrics_worksheet)
+			print(pushes[i]["sheet_link"])
+			metrics_worksheet.insert_row([pushes[i]["uid"], str(datetime.now())] + data_row, 2)
+			sheet_link = pushes[i]["sheet_link"]
+			sh = gc.open_by_url(sheet_link)
+			name = "METRICS"
+			try:
+				metr_worksheet = sh.worksheet(name)
+			except Exception as e:
+				sh.add_worksheet(title=name, rows="5", cols="20")
+				metr_worksheet = sh.worksheet(name)
+				metr_worksheet.insert_row(["ID пользователя", "Дата и время", "Метрика", "+", "-", "Участок", "Город"], 1)
+			metr_worksheet.insert_row([pushes[i]["uid"], str(datetime.now())] + data_row, 2)
 			print("success")
 		except Exception as e:
 			print(e)
-			print("failed, pushing back", row)
-			sheets_queue.put(row)
-	print("done, sheets empty")
+			row_toinsert = [pushes[i]["sheet_link"], [pushes[i]["uid"]] + data_row]
+			print("failed, pushing back", row_toinsert)
+			metrics_queue.put(row_toinsert)
+	print("done, metrics empty")
 
 
 def push_data_job():
 	print("gotta push data")
-	while not data_queue.empty():
-		print("getting... data")
+	while JOBS_ALLOWED and not data_queue.empty():
 		row = data_queue.get()
 		print("got", row)
 		try:
@@ -130,30 +172,24 @@ def push_data_job():
 	print("done, data empty")
 
 
-def push_incidents_job():
-	print("gotta push incidents")
-	while not incidents_queue.empty():
-		print("getting... incidents")
-		row = incidents_queue.get()
-		print("got", row)
-		try:
-			incidents_worksheet.insert_row(row, 2)
-			print("success")
-		except Exception as e:
-			print(e)
-			print("failed, pushing back", row)
-			data_queue.put(row)
-	print("done, incidents empty")
-
-
 def push_locations_job():
 	print("gotta push locations")
-	while not locations_queue.empty():
+	while JOBS_ALLOWED and not locations_queue.empty():
 		print("getting... locations")
 		row = locations_queue.get()
+		sheet_link, data = row
 		print("got", row)
 		try:
-			locations_worksheet.insert_row(row, 2)
+			locations_worksheet.insert_row(data, 2)
+			sh = gc.open_by_url(sheet_link)
+			name = "LOCATIONS"
+			try:
+				loc_worksheet = sh.worksheet(name)
+			except Exception as e:
+				sh.add_worksheet(title=name, rows="5", cols="20")
+				loc_worksheet = sh.worksheet(name)
+				loc_worksheet.insert_row(["ID пользователя", "Дата и время", "Широта", "Долгота", "Место", "Город"], 1)
+			loc_worksheet.insert_row(data, 2)
 			print("success")
 		except Exception as e:
 			print(e)
@@ -162,127 +198,112 @@ def push_locations_job():
 	print("done, locations empty")
 
 
-def push_confirmations_job():
-	print("gotta push confirmations")
-	while not confirmations_queue.empty():
-		print("getting... confirmations")
-		row = confirmations_queue.get()
+def push_incidents_job():
+	print("gotta push incidents")
+	while JOBS_ALLOWED and not incidents_queue.empty():
+		print("getting... incidents")
+		row = incidents_queue.get()
+		sheet_link, data = row
 		print("got", row)
 		try:
-			confirmations_worksheet.insert_row(row, 2)
+			incidents_worksheet.insert_row(data, 2)
+			sh = gc.open_by_url(sheet_link)
+			name = "INCIDENTS"
+			try:
+				inc_worksheet = sh.worksheet(name)
+			except Exception as e:
+				sh.add_worksheet(title=name, rows="5", cols="20")
+				inc_worksheet = sh.worksheet(name)
+				inc_worksheet.insert_row(["ID пользователя", "Дата и время", "Файл", "Номер подтверждения", "Место", "Город"], 1)
+			inc_worksheet.insert_row(data, 2)
 			print("success")
 		except Exception as e:
 			print(e)
 			print("failed, pushing back", row)
-			confirmations_queue.put(row)
-	print("done, confirmations empty")
+			incidents_queue.put(row)
+	print("done, incidents empty")
 
 
-def send_location(uid, longitude, latitude, place, city):
-	locations_queue.put([uid, longitude, latitude, place, city])
-
-
-def send_confirmation(uid, file_link, confirmation_number, place, city):
-	confirmations_queue.put([uid, str(datetime.now()), file_link, confirmation_number, place, city])
-
-
-def send_data(uid, event_type, data, place, city):
-	res = []
-	incident_res = []
-	if event_type == "name":
-		res = [str(datetime.now()), uid, f"Пользователь ввёл данные: ФИО {data}", ""]
-	if event_type == "phone_number":
-		res = [str(datetime.now()), uid, f"Пользователь ввёл данные: Номер телефона {data}", ""]
-	if event_type == "email":
-		res = [str(datetime.now()), uid, f"Пользователь ввёл данные: Email {data}", ""]
-	if event_type == "passport_info":
-		res = [str(datetime.now()), uid, f"Пользователь ввёл данные: Паспорт {data}", ""]
-	if event_type == "city":
-		res = [str(datetime.now()), uid, f"Пользователь ввёл данные: Город {data}", ""]
-	if event_type == "place":
-		res = [str(datetime.now()), uid, f"Пользователь ввёл данные: Участок {data}", place]
-	if event_type == "inc":
-		if data == "m":
-			res = [str(datetime.now()), uid, "М+", place]
-		elif data == "f":
-			res = [str(datetime.now()), uid, "Ж+", place]
-	elif event_type == "dec":
-		if data == "m":
-			res = [str(datetime.now()), uid, "М-", place]
-		elif data == "f":
-			res = [str(datetime.now()), uid, "Ж-", place]
-	elif event_type == "incident_started":
-		res = [str(datetime.now()), uid, f"Инициировано событие {data}", place]
-	elif event_type == "incident_ended":
-		res = [str(datetime.now()), uid, f"Завершено событие {data}", place]
-	elif event_type == "incident_data":
-		if data["type"] == "text":
-			res = [str(datetime.now()), uid, f"К событию {data['incident_id']} добавлен текст: {data['text']}", place]
-		elif data["type"] == "document":
-			res = [str(datetime.now()), uid, f"К событию {data['incident_id']} прикреплён документ: {data['file_link']}", place]
-			incident_res = [str(datetime.now()), uid, place, city, data['file_link'], "Документ"]
-		elif data["type"] == "photo":
-			res = [str(datetime.now()), uid, f"К событию {data['incident_id']} прикреплена фотография: {data['file_link']}", place]
-			incident_res = [str(datetime.now()), uid, place, city, data['file_link'], "Фотография"]
-		elif data["type"] == "video":
-			res = [str(datetime.now()), uid, f"К событию {data['incident_id']} прикреплено видео: {data['file_link']}", place]
-			incident_res = [str(datetime.now()), uid, place, city, data['file_link'], "Видео"]
-		elif data["type"] == "voice":
-			res = [str(datetime.now()), uid, f"К событию {data['incident_id']} прикреплено голосовое сообщение: {data['file_link']}", place]
-			incident_res = [str(datetime.now()), uid, place, city, data['file_link'], "Голосовое сообщение"]
-		elif data["type"] == "video_note":
-			res = [str(datetime.now()), uid, f"К событию {data['incident_id']} прикреплена видеозаметка: {data['file_link']}", place]
-			incident_res = [str(datetime.now()), uid, place, city, data['file_link'], "Видеозаметка"]
-		elif data["type"] == "caption":
-			res = [str(datetime.now()), uid, f"К событию {data['incident_id']} добавлена подпись для вложений: {data['text']}", place]
-		elif data["type"] == "location":
-			res = [str(datetime.now()), uid, f"К событию {data['incident_id']} добавлена геолокация: {data['longitude']} {data['latitude']}", place]
-	if res:
-		print("pushing res to queue", res)
-		sheets_queue.put(res)
-		print("pushed")
-	if incident_res:
-		print("pushing incident_res to queue", res)
-		incidents_queue.put(incident_res)
-		print("pushed")
+def send_location(uid, longitude, latitude, place, city, sheet_link):
+	place = place.strip("'")
+	if place.isdigit():
+		place = int(place)
+	locations_queue.put([sheet_link, [uid, str(datetime.now()), longitude, latitude, place, city]])
 
 
 def start(update, context):
-	context.user_data["status"] = "name"
-	if "users" not in context.bot_data:
-		context.bot_data["users"] = {}
-	context.bot_data["users"][str(update.message.chat_id)] = {"last_updated_location": datetime.now() - timedelta(hours=1)}
-	update.message.reply_text('Введите, пожалуйста, ФИО')
+	global LOADED_DUMP
+	if not LOADED_DUMP:
+		with open("bot_data.json", encoding="utf-8") as f:
+			s = load(f)
+			for i in s:
+				context.bot_data[i] = s[i]
+			LOADED_DUMP = True
+	uid = str(update.message.chat_id)
+	if uid not in context.bot_data:
+		context.bot_data[uid] = {}
+	context.bot_data[uid]["status"] = "name"
+	context.bot_data[uid]["last_updated_location"] = str(datetime.now() - timedelta(hours=1))
+	update.message.reply_text('Введите, пожалуйста, ФИО', reply_markup=ReplyKeyboardRemove())
 
 
 def button(update, context):
-	context.user_data["city"] = update.callback_query.data
-	context.user_data["status"] = "place"
+	global LOADED_DUMP
+	if not LOADED_DUMP:
+		with open("bot_data.json", encoding="utf-8") as f:
+			s = load(f)
+			for i in s:
+				context.bot_data[i] = s[i]
+			LOADED_DUMP = True
+	uid = str(update.callback_query.from_user.id)
+	if uid not in context.bot_data:
+		context.bot_data[uid] = {}
+		context.bot_data[uid]["status"] = "name"
+		context.bot_data[uid]["last_updated_location"] = str(datetime.now() - timedelta(hours=1))
+		update.message.reply_text('Нужно зарегистрироваться. Введите, пожалуйста, ФИО', reply_markup=ReplyKeyboardRemove())
+		return
+	context.bot_data[uid]["city"] = update.callback_query.data
+	context.bot_data[uid]["status"] = "place"
 	update.callback_query.edit_message_text('Введите, пожалуйста, участок')
 
 
 def texter(update, context):
+	global LOADED_DUMP
+	if not LOADED_DUMP:
+		with open("bot_data.json", encoding="utf-8") as f:
+			s = load(f)
+			for i in s:
+				context.bot_data[i] = s[i]
+			LOADED_DUMP = True
 	uid = str(update.message.chat_id)
-	status = context.user_data["status"]
+	if uid not in context.bot_data:
+		context.bot_data[uid] = {}
+		context.bot_data[uid]["status"] = "name"
+		context.bot_data[uid]["last_updated_location"] = str(datetime.now() - timedelta(hours=1))
+		update.message.reply_text('Нужно зарегистрироваться. Введите, пожалуйста, ФИО', reply_markup=ReplyKeyboardRemove())
+		return
+	status = context.bot_data[uid]["status"]
 	print(status)
-	if status in ["name", "phone_number", "email", "passport_info", "place"]:
+	if status in ["name", "phone_number", "place"]:
 		if status == "name":
 			name = update.message.text.split()
 			if len(name) != 3 or not all(i.isalpha() for i in name):
 				update.message.reply_text('Неверный формат ФИО, попробуйте ещё раз')
 			else:
-				context.user_data["name"] = update.message.text
-				context.user_data["status"] = "phone_number"
+				context.bot_data[uid]["name"] = update.message.text
+				context.bot_data[uid]["status"] = "phone_number"
 				update.message.reply_text('Введите, пожалуйста, номер телефона')
-		if status == "phone_number":
+		elif status == "phone_number":
 			try:
 				phone_number = phonenumbers.parse(update.message.text, None)
 				if not phonenumbers.is_valid_number(phone_number):
 					update.message.reply_text('Неверный формат номера, попробуйте ещё раз')
 				else:
-					context.user_data["phone_number"] = phonenumbers.format_number(phone_number, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
-					context.user_data["status"] = "email"
-					update.message.reply_text('Введите, пожалуйста, Ваш email')
+					context.bot_data[uid]["phone_number"] = phonenumbers.format_number(phone_number, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
+					context.bot_data[uid]["status"] = "city"
+					update.message.reply_text('Введите, пожалуйста, город', reply_markup=InlineKeyboardMarkup([
+						[InlineKeyboardButton(city, callback_data=city)] for city in context.bot_data["cities"]
+					]), one_time_keyboard=True)
 			except Exception as e:
 				print(e)
 				try:
@@ -290,240 +311,149 @@ def texter(update, context):
 					if not phonenumbers.is_valid_number(phone_number):
 						update.message.reply_text('Неверный формат номера, попробуйте ещё раз')
 					else:
-						context.user_data["phone_number"] = phonenumbers.format_number(phone_number, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
-						context.user_data["status"] = "email"
-						update.message.reply_text('Введите, пожалуйста, Ваш email')
-				except Exception as e:
-					print(e)
-					update.message.reply_text('Неверный формат номера, попробуйте ещё раз')
-		if status == "email":
-			if not validate_email(update.message.text, check_mx=True):
-				update.message.reply_text('Неверный email, попробуйте ещё раз')
-			else:
-				context.user_data["email"] = update.message.text
-				context.user_data["status"] = "passport_info"
-				update.message.reply_text('Введите, пожалуйста, серию и номер паспорта')
-		if status == "passport_info":
-			context.user_data["passport_info"] = update.message.text
-			context.user_data["status"] = "city"
-			update.message.reply_text('Введите, пожалуйста, город', reply_markup=InlineKeyboardMarkup([
-				[InlineKeyboardButton(city, callback_data=city)] for city in context.bot_data["cities"]
-			]), one_time_keyboard=True)
-		if status == "place":
-			context.user_data["place"] = update.message.text
-			context.user_data["status"] = "ready"
-			data_queue.put([uid, context.user_data["name"], context.user_data["phone_number"], context.user_data["email"], context.user_data["passport_info"], context.user_data["city"], context.user_data["place"]])
-			update.message.reply_text('Регистрация успешно пройдена. Спасибо!', reply_markup=ReplyKeyboardMarkup([
-				[KeyboardButton("М+"), KeyboardButton("Ж+")],
-				[KeyboardButton("Создать инцидент")],
-				[KeyboardButton("М-"), KeyboardButton("Ж-")],
-				[KeyboardButton("Подтвердить голос")]
-			]), one_time_keyboard=True)
-		send_data(uid=uid, event_type=status, data=update.message.text, place=context.user_data["place"] if "place" in context.user_data else "", city=context.user_data["city"] if "city" in context.user_data else "")
-	elif status == "admin":
-		text = update.message.text.split('\n')
-		context.user_data["status"] = "ready"
-		context.bot_data["cities"] = text
-		update.message.reply_text("Список городов обновлён /menu")
-	else:
-		location_updated = False
-		if status == "awaiting_location" and update.message.location:
-			location = update.message.location
-			if location:
-				send_location(uid=uid, longitude=location.longitude, latitude=location.latitude, place=context.user_data["place"], city=context.user_data["city"])
-				location_updated = True
-				context.bot_data["users"][uid]["last_updated_location"] = datetime.now()
-				context.user_data["status"] = "ready"
-				update.message.reply_text('Геолокация обновлена')
-		if not location_updated and (datetime.now() - context.bot_data["users"][uid]["last_updated_location"]).seconds >= 1800:
-			context.user_data["status"] = "awaiting_location"
-			update.message.reply_text("Пришлите, пожалуйста, текущую геолокацию")
-		else:
-			if status == "ready":
-				text = update.message.text
-				if text == "М+":
-					send_data(uid=uid, event_type="inc", data="m", place=context.user_data["place"], city=context.user_data["city"])
-					update.message.reply_text("Счётчик успешно обновлён")
-				if text == "Ж+":
-					send_data(uid=uid, event_type="inc", data="f", place=context.user_data["place"], city=context.user_data["city"])
-					update.message.reply_text("Счётчик успешно обновлён")
-				if text == "М-":
-					send_data(uid=uid, event_type="dec", data="m", place=context.user_data["place"], city=context.user_data["city"])
-					update.message.reply_text("Счётчик успешно обновлён")
-				if text == "Ж-":
-					send_data(uid=uid, event_type="dec", data="f", place=context.user_data["place"], city=context.user_data["city"])
-					update.message.reply_text("Счётчик успешно обновлён")
-				if text == "Создать инцидент":
-					context.user_data["status"] = "create_incident"
-					context.user_data["incident_id"] = ''.join(random.choice(string.ascii_lowercase) for i in range(15))
-					send_data(uid=uid, event_type="incident_started", data=context.user_data["incident_id"], place=context.user_data["place"], city=context.user_data["city"])
-					update.message.reply_text('Событие инициировано, можете добавлять текст, фото, видео', reply_markup=ReplyKeyboardMarkup([
-						[KeyboardButton("Завершить " + context.user_data["incident_id"])]
-					]), one_time_keyboard=True)
-				if text == "Подтвердить голос":
-					context.user_data["status"] = "confirm_vote"
-					context.user_data["confirmation_number"] = confirmation_numbers.pop()
-					update.message.reply_text(f'Пришлите, пожалуйста, фотографию заполненного Вами бюллетеня. Ваш код подтвержения: {context.user_data["confirmation_number"]}', reply_markup=ReplyKeyboardMarkup([
-						[KeyboardButton(f'Отменить подтверждение {context.user_data["confirmation_number"]}')]
-					]), one_time_keyboard=True)
-			elif status == "confirm_vote":
-				text = ''
-				try:
-					text = update.message.text
-					if text == f'Отменить подтверждение {context.user_data["confirmation_number"]}':
-						context.user_data["status"] = "ready"
-						context.user_data["confirmation_number"] = -1
-						update.message.reply_text('Главное меню', reply_markup=ReplyKeyboardMarkup([
-							[KeyboardButton("М+"), KeyboardButton("Ж+")],
-							[KeyboardButton("Создать инцидент")],
-							[KeyboardButton("М-"), KeyboardButton("Ж-")],
-							[KeyboardButton("Подтвердить голос")]
+						context.bot_data[uid]["phone_number"] = phonenumbers.format_number(phone_number, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
+						context.bot_data[uid]["status"] = "city"
+						update.message.reply_text('Введите, пожалуйста, город', reply_markup=InlineKeyboardMarkup([
+							[InlineKeyboardButton(city, callback_data=city)] for city in context.bot_data["cities"]
 						]), one_time_keyboard=True)
 				except Exception as e:
 					print(e)
-				if not text:
+					update.message.reply_text('Неверный формат номера, попробуйте ещё раз')
+		elif status == "place":
+			context.bot_data[uid]["place"] = update.message.text
+			context.bot_data[uid]["status"] = "ready"
+			context.bot_data[uid]["markers"] = ["М", "Ж"]
+			data_queue.put([uid, str(datetime.now()), context.bot_data[uid]["name"], context.bot_data[uid]["phone_number"], context.bot_data[uid]["city"], context.bot_data[uid]["place"]])
+			update.message.reply_text('Регистрация успешно пройдена. Спасибо!', reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])), one_time_keyboard=True)
+	elif status == "admin":
+		text = update.message.text.split('\n')
+		context.bot_data[uid]["status"] = "ready"
+		context.bot_data["cities"] = text
+		update.message.reply_text("Список городов обновлён /menu")
+	elif status == "sheet":
+		text = update.message.text
+		if text == 'Отменить привязку таблицы':
+			context.bot_data[uid]["status"] = "ready"
+			update.message.reply_text('Главное меню', reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])), one_time_keyboard=True)
+		else:
+			context.bot_data[uid]["sheet"] = text
+			context.bot_data[uid]["status"] = "ready"
+			update.message.reply_text('Таблица успешно привязана', reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])), one_time_keyboard=True)
+	elif status == "markers":
+		text = update.message.text
+		if text == 'Вернуться в главное меню':
+			context.bot_data[uid]["status"] = "ready"
+			update.message.reply_text('Главное меню', reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])), one_time_keyboard=True)
+		else:
+			context.bot_data[uid]["markers"] = text.split("\n")
+			context.bot_data[uid]["status"] = "ready"
+			update.message.reply_text('Метрики успешно обновлены', reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])), one_time_keyboard=True)
+	else:
+		text = update.message.text
+		if text == "Таблица":
+			context.bot_data[uid]["status"] = "sheet"
+			if "sheet" in context.bot_data[uid] and context.bot_data[uid]["sheet"]:
+				update.message.reply_text(f'Текущая таблица: {context.bot_data[uid]["sheet"]}')
+			else:
+				update.message.reply_text('Таблица ещё не привязана')
+			update.message.reply_text(f'Предоставьте, пожалуйста, доступ к таблице: {GSPREAD_EMAIL}. После этого пришлите ссылку на таблицу', reply_markup=ReplyKeyboardMarkup([
+				[KeyboardButton('Отменить привязку таблицы')]
+			]), one_time_keyboard=True)
+		elif text == "Изменить метрики":
+			context.bot_data[uid]["status"] = "markers"
+			cur_metr = "\n".join(context.bot_data[uid]["markers"])
+			update.message.reply_text(f'Пришлите, пожалуйста, новые метрики, каждую с новой строки. Текущие метрики:\n{cur_metr}', reply_markup=ReplyKeyboardMarkup([
+				[KeyboardButton('Вернуться в главное меню')]
+			]), one_time_keyboard=True)
+		else:
+			location_updated = False
+			if status == "awaiting_location" and update.message.location:
+				location = update.message.location
+				if location:
+					if "sheet" not in context.bot_data[uid] or not context.bot_data[uid]["sheet"]:
+						update.message.reply_text("У вас пока нет действующей таблицы (spreadsheets.google.com). Привяжите её главном меню", reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])))
+						return
+					if "sh" not in context.bot_data[uid] or not context.bot_data[uid]["sh"]:
+						try:
+							context.bot_data[uid]["sh"] = gc.open_by_url(context.bot_data[uid]["sheet"])
+						except Exception as e:
+							print(e)
+							update.message.reply_text("Бот не может получить доступ к таблице. Пожалуйста, проверьте настройки доступа", reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])))
+							return
+					send_location(uid=uid, longitude=location.longitude, latitude=location.latitude, place=context.bot_data[uid]["place"], city=context.bot_data[uid]["city"], sheet_link=context.bot_data[uid]["sheet"])
+					location_updated = True
+					context.bot_data[uid]["last_updated_location"] = str(datetime.now())
+					context.bot_data[uid]["status"] = "ready"
+					update.message.reply_text('Геолокация обновлена', reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])))
+			if not location_updated and (datetime.now() - datetime.strptime(context.bot_data[uid]["last_updated_location"], "%Y-%m-%d %H:%M:%S.%f")).seconds >= 1800:
+				context.bot_data[uid]["status"] = "awaiting_location"
+				update.message.reply_text("Пришлите, пожалуйста, текущую геолокацию", reply_markup=ReplyKeyboardMarkup([
+					[KeyboardButton("Отправить", request_location=True)]
+				]))
+			else:
+				if status == "ready":
+					text = update.message.text
+					marker, sign = text[:-1], text[-1]
+					if marker in context.bot_data[uid]["markers"] and sign in ["+", "-"]:
+						if "sheet" not in context.bot_data[uid] or not context.bot_data[uid]["sheet"]:
+							update.message.reply_text("У вас пока нет действующей таблицы (spreadsheets.google.com). Привяжите её главном меню", reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])))
+							return
+						if "sh" not in context.bot_data[uid] or not context.bot_data[uid]["sh"]:
+							try:
+								context.bot_data[uid]["sh"] = gc.open_by_url(context.bot_data[uid]["sheet"])
+							except Exception as e:
+								print(e)
+								update.message.reply_text("Бот не может получить доступ к таблице. Пожалуйста, проверьте настройки доступа", reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])))
+								return
+						metrics_queue.put([context.bot_data[uid]["sheet"], [uid, marker, 1 if sign == "+" else 0, 1 if sign == "-" else 0, context.bot_data[uid]["place"], context.bot_data[uid]["city"]]])
+						update.message.reply_text("Счётчик успешно обновлён")
+					elif text == "Создать инцидент":
+						if "sheet" not in context.bot_data[uid] or not context.bot_data[uid]["sheet"]:
+							update.message.reply_text("У вас пока нет действующей таблицы (spreadsheets.google.com). Привяжите её главном меню", reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])))
+							return
+						if "sh" not in context.bot_data[uid] or not context.bot_data[uid]["sh"]:
+							try:
+								context.bot_data[uid]["sh"] = gc.open_by_url(context.bot_data[uid]["sheet"])
+							except Exception as e:
+								print(e)
+								update.message.reply_text("Бот не может получить доступ к таблице. Пожалуйста, проверьте настройки доступа", reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])))
+								return
+						context.bot_data[uid]["status"] = "confirm_vote"
+						context.bot_data[uid]["confirmation_number"] = random.randint(1000, 30000000)
+						while context.bot_data[uid]["confirmation_number"] in context.bot_data["used_numbers"]:
+							context.bot_data[uid]["confirmation_number"] = random.randint(1000, 30000000)
+						update.message.reply_text(f'Пришлите, пожалуйста, фотографию. Ваш код подтвержения: {context.bot_data[uid]["confirmation_number"]}', reply_markup=ReplyKeyboardMarkup([
+							[KeyboardButton(f'Отменить подтверждение {context.bot_data[uid]["confirmation_number"]}')]
+						]), one_time_keyboard=True)
+				elif status == "confirm_vote":
+					text = ''
+					print(12345)
 					try:
-						photo = update.message.photo[-1]
-						if photo:
-							filename = f"{uid}-{context.user_data['confirmation_number']}-{photo.file_id}.jpg"
-							photo.get_file().download(filename)
-							upload_file(filename)
-							send_confirmation(uid=uid, file_link=f"https://statpad-logs.s3.amazonaws.com/{filename}",
-											  confirmation_number=context.user_data["confirmation_number"],
-											  place=context.user_data["place"], city=context.user_data["city"])
-							context.user_data["status"] = "ready"
-							update.message.reply_text('Подтверждение отправлено, спасибо!', reply_markup=ReplyKeyboardMarkup([
-								[KeyboardButton("М+"), KeyboardButton("Ж+")],
-								[KeyboardButton("Создать инцидент")],
-								[KeyboardButton("М-"), KeyboardButton("Ж-")],
-								[KeyboardButton("Подтвердить голос")]
-							]), one_time_keyboard=True)
-					except Exception:
-						pass
-			elif status == "create_incident":
-				incident_id = context.user_data["incident_id"]
-				message = update.message
-				try:
-					text = message.text
-					if text:
-						if text == "Завершить " + incident_id:
-							context.user_data["status"] = "ready"
-							send_data(uid=uid, event_type="incident_ended", data=context.user_data["incident_id"], place=context.user_data["place"], city=context.user_data["city"])
-							update.message.reply_text('Событие успешно завершено', reply_markup=ReplyKeyboardMarkup([
-								[KeyboardButton("М+"), KeyboardButton("Ж+")],
-								[KeyboardButton("Создать инцидент")],
-								[KeyboardButton("М-"), KeyboardButton("Ж-")],
-								[KeyboardButton("Подтвердить голос")]
-							]), one_time_keyboard=True)
-						else:
-							send_data(uid=uid, event_type="incident_data", data={
-								"incident_id": incident_id,
-								"type": "text",
-								"text": text
-							}, place=context.user_data["place"], city=context.user_data["city"])
-							update.message.reply_text('Вложение принято')
-				except Exception:
-					pass
-				try:
-					document = message.document
-					if document:
-						filename = f"{uid}-{incident_id}-{document.file_name}"
-						document.get_file().download(filename)
-						upload_file(filename)
-						send_data(uid=uid, event_type="incident_data", data={
-							"incident_id": incident_id,
-							"type": "document",
-							"file_link": f"https://statpad-logs.s3.amazonaws.com/{filename}"
-						}, place=context.user_data["place"], city=context.user_data["city"])
-						update.message.reply_text('Вложение принято')
-						'''
-						context.user_data[context.user_data["incident_id"]].append({
-							"type": "document",
-							"file_link": f"https://statpad-logs.s3.amazonaws.com/{filename}",
-							"datetime": str(datetime.now())
-						})
-						'''
-				except Exception:
-					pass
-				try:
-					photo = update.message.photo[-1]
-					if photo:
-						filename = f"{uid}-{incident_id}-{photo.file_id}.jpg"
-						photo.get_file().download(filename)
-						upload_file(filename)
-						send_data(uid=uid, event_type="incident_data", data={
-							"incident_id": incident_id,
-							"type": "photo",
-							"file_link": f"https://statpad-logs.s3.amazonaws.com/{filename}"
-						}, place=context.user_data["place"], city=context.user_data["city"])
-						update.message.reply_text('Вложение принято')
-				except Exception:
-					pass
-				try:
-					video = message.video
-					if video:
-						filename = f"{uid}-{incident_id}-{video.file_id}.MOV"
-						video.get_file().download(filename)
-						upload_file(filename)
-						send_data(uid=uid, event_type="incident_data", data={
-							"incident_id": incident_id,
-							"type": "video",
-							"file_link": f"https://statpad-logs.s3.amazonaws.com/{filename}"
-						}, place=context.user_data["place"], city=context.user_data["city"])
-						update.message.reply_text('Вложение принято')
-				except Exception:
-					pass
-				try:
-					voice = message.voice
-					if voice:
-						filename = f"{uid}-{incident_id}-{voice.file_id}.oga"
-						voice.get_file().download(filename)
-						upload_file(filename)
-						send_data(uid=uid, event_type="incident_data", data={
-							"incident_id": incident_id,
-							"type": "voice",
-							"file_link": f"https://statpad-logs.s3.amazonaws.com/{filename}"
-						}, place=context.user_data["place"], city=context.user_data["city"])
-						update.message.reply_text('Вложение принято')
-				except Exception:
-					pass
-				try:
-					video_note = message.video_note
-					if video_note:
-						filename = f"{uid}-{incident_id}-{video_note.file_id}.mp4"
-						video_note.get_file().download(filename)
-						upload_file(filename)
-						send_data(uid=uid, event_type="incident_data", data={
-							"incident_id": incident_id,
-							"type": "video_note",
-							"file_link": f"https://statpad-logs.s3.amazonaws.com/{filename}"
-						}, place=context.user_data["place"], city=context.user_data["city"])
-						update.message.reply_text('Вложение принято')
-				except Exception:
-					pass
-				try:
-					caption = message.caption
-					if caption:
-						send_data(uid=uid, event_type="incident_data", data={
-							"incident_id": incident_id,
-							"type": "caption",
-							"text": caption
-						}, place=context.user_data["place"], city=context.user_data["city"])
-						update.message.reply_text('Вложение принято')
-				except Exception:
-					pass
-				try:
-					location = message.location
-					if location:
-						send_data(uid=uid, event_type="incident_data", data={
-							"incident_id": incident_id,
-							"type": "location",
-							"longitude": location.longitude,
-							"latitude": location.latitude
-						}, place=context.user_data["place"], city=context.user_data["city"])
-						update.message.reply_text('Вложение принято')
-				except Exception:
-					pass
+						text = update.message.text
+						if text == f'Отменить подтверждение {context.bot_data[uid]["confirmation_number"]}':
+							context.bot_data[uid]["status"] = "ready"
+							context.bot_data[uid]["confirmation_number"] = -1
+							update.message.reply_text('Главное меню', reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])), one_time_keyboard=True)
+					except Exception as e:
+						print(e)
+					if not text:
+						try:
+							photo = update.message.photo[-1]
+							if photo:
+								filename = f"{uid}-{context.bot_data[uid]['confirmation_number']}-{photo.file_id}.jpg"
+								photo.get_file().download(filename)
+								upload_file(filename)
+								incidents_queue.put([context.bot_data[uid]["sheet"], [uid, str(datetime.now()), f"https://statpad-logs.s3.amazonaws.com/{filename}", context.bot_data[uid]["confirmation_number"], context.bot_data[uid]["place"], context.bot_data[uid]["city"]]])
+								context.bot_data[uid]["status"] = "ready"
+								print("doing!!!")
+								context.bot_data["used_numbers"].append(context.bot_data[uid]["confirmation_number"])
+								print("done!!!")
+								update.message.reply_text(f"""
+								Подтверждение отправлено, спасибо! Ваш номер: `{context.bot_data[uid]["confirmation_number"]}`
+								""", reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])), one_time_keyboard=True, parse_mode=ParseMode.MARKDOWN)
+								context.bot_data[uid]["confirmation_number"] = -1
+						except Exception:
+							pass
 
 
 def stop(update, context):
@@ -533,10 +463,23 @@ def stop(update, context):
 
 
 def admin(update, context):
+	global LOADED_DUMP
+	if not LOADED_DUMP:
+		with open("bot_data.json", encoding="utf-8") as f:
+			s = load(f)
+			for i in s:
+				context.bot_data[i] = s[i]
+			LOADED_DUMP = True
 	uid = str(update.message.chat_id)
 	print(uid)
+	if uid not in context.bot_data:
+		context.bot_data[uid] = {}
+		context.bot_data[uid]["status"] = "name"
+		context.bot_data[uid]["last_updated_location"] = str(datetime.now() - timedelta(hours=1))
+		update.message.reply_text('Нужно зарегистрироваться. Введите, пожалуйста, ФИО', reply_markup=ReplyKeyboardRemove())
+		return
 	if uid in ["814961422", "106052"]:
-		context.user_data["status"] = "admin"
+		context.bot_data[uid]["status"] = "admin"
 		s = '\n'.join(context.bot_data["cities"]) if "cities" in context.bot_data else ""
 		update.message.reply_text('Вот список городов:')
 		update.message.reply_text(s if s else "Городов пока нет")
@@ -544,19 +487,86 @@ def admin(update, context):
 			/menu - вернуться в меню
 			Или отправьте новый список городов, по одному в каждой строке
 		''')
+	else:
+		update.message.reply_text("Вы - не администратор")
 
 
 def menu(update, context):
-	if "status" not in context.user_data or context.user_data["status"] not in ["ready", "admin", "create_incident"]:
+	global LOADED_DUMP
+	if not LOADED_DUMP:
+		with open("bot_data.json", encoding="utf-8") as f:
+			s = load(f)
+			for i in s:
+				context.bot_data[i] = s[i]
+			LOADED_DUMP = True
+	uid = str(update.message.chat_id)
+	if uid not in context.bot_data:
+		context.bot_data[uid] = {}
+		context.bot_data[uid]["status"] = "name"
+		context.bot_data[uid]["last_updated_location"] = str(datetime.now() - timedelta(hours=1))
+		update.message.reply_text('Нужно зарегистрироваться. Введите, пожалуйста, ФИО', reply_markup=ReplyKeyboardRemove())
+		return
+	if "status" not in context.bot_data[uid] or context.bot_data[uid]["status"] not in ["ready", "admin", "create_incident"]:
 		update.message.reply_text('Вы не закончили регистрацию, нажмите /start')
 	else:
-		context.user_data["status"] = "ready"
-		update.message.reply_text('Главное меню', reply_markup=ReplyKeyboardMarkup([
-			[KeyboardButton("М+"), KeyboardButton("Ж+")],
-			[KeyboardButton("Создать инцидент")],
-			[KeyboardButton("М-"), KeyboardButton("Ж-")],
-			[KeyboardButton("Подтвердить голос")]
-		]), one_time_keyboard=True)
+		context.bot_data[uid]["status"] = "ready"
+		update.message.reply_text('Главное меню', reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])), one_time_keyboard=True)
+
+
+def save_data(update, context):
+	if str(update.message.chat_id) in ["814961422", "106052"]:
+		with open("bot_data.json", "w+", encoding="utf-8") as f:
+			s = context.bot_data
+			for i in s:
+				if "sh" in s[i]:
+					s[i]["sh"] = ""
+				if "metrics_worksheet" in s[i]:
+					s[i]["metrics_worksheet"] = ""
+				if "locations_worksheet" in s[i]:
+					s[i]["locations_worksheet"] = ""
+			dump(context.bot_data, f, ensure_ascii=False, indent=4)
+			update.message.reply_text("Данные успешно сохранены", reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[str(update.message.chat_id)]["markers"])), one_time_keyboard=True)
+	else:
+		update.message.reply_text("Вы - не администратор")
+
+
+def save_jobs(update, context):
+	global JOBS_ALLOWED
+	if str(update.message.chat_id) in ["814961422", "106052"]:
+		attempts = 0
+		JOBS_ALLOWED = False
+		if attempts == 4:
+			update.message.reply_text("Не удалось сохранить очереди")
+		else:
+			with open("job_data.json", "w+", encoding="utf-8") as f:
+				s = dict()
+				s["s3_queue"] = list(s3_queue.queue)
+				s["metrics_queue"] = list(metrics_queue.queue)
+				s["data_queue"] = list(data_queue.queue)
+				s["incidents_queue"] = list(incidents_queue.queue)
+				s["locations_queue"] = list(locations_queue.queue)
+				dump(s, f, ensure_ascii=False, indent=4)
+		update.message.reply_text("Очереди сохранены")
+	else:
+		update.message.reply_text("Вы - не администратор")
+
+
+def stop_updaters(update, context):
+	global JOBS_ALLOWED
+	if str(update.message.chat_id) in ["814961422", "106052"]:
+		JOBS_ALLOWED = False
+		update.message.reply_text("Загрузки приостановлены")
+	else:
+		update.message.reply_text("Вы - не администратор")
+
+
+def resume_updaters(update, context):
+	global JOBS_ALLOWED
+	if str(update.message.chat_id) in ["814961422", "106052"]:
+		JOBS_ALLOWED = True
+		update.message.reply_text("Загрузки возобновлены")
+	else:
+		update.message.reply_text("Вы - не администратор")
 
 
 def main():
@@ -566,21 +576,24 @@ def main():
 	dp.add_handler(CommandHandler("shutdown", stop))
 	dp.add_handler(CommandHandler("admin", admin))
 	dp.add_handler(CommandHandler("menu", menu))
+	dp.add_handler(CommandHandler("save_data", save_data))
+	dp.add_handler(CommandHandler("save_jobs", save_jobs))
+	dp.add_handler(CommandHandler("stop_updaters", stop_updaters))
+	dp.add_handler(CommandHandler("resume_updaters", resume_updaters))
 	dp.add_handler(CallbackQueryHandler(button))
 	dp.add_handler(MessageHandler(Filters.all, texter))
 	updater.start_polling()
-	schedule.every().minute.do(push_s3_job).run()
-	schedule.every().minute.do(push_sheets_job).run()
-	schedule.every().minute.do(push_data_job).run()
-	schedule.every().minute.do(push_locations_job).run()
-	schedule.every().minute.do(push_incidents_job).run()
-	schedule.every().minute.do(push_confirmations_job).run()
+	schedule.every().minute.do(push_metrics_job).run()
+	schedule.every().minute.do(push_s3_job)
+	schedule.every().minute.do(push_data_job)
+	schedule.every().minute.do(push_locations_job)
+	schedule.every().minute.do(push_incidents_job)
 	while True:
 		try:
 			print(datetime.now())
 			for i in schedule.jobs:
 				try:
-					if i.should_run:
+					if i.should_run and JOBS_ALLOWED:
 						i.run()
 				except Exception as e:
 					traceback.print_exc()

@@ -1,0 +1,7 @@
+{
+	"s3_queue": [],
+	"metrics_queue": [],
+	"data_queue": [],
+	"incidents_queue": [],
+	"locations_queue": []
+}
