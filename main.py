@@ -56,14 +56,14 @@ try:
 except Exception as e:
 	sh.add_worksheet(title=name, rows="5", cols="20")
 	metrics_worksheet = sh.worksheet(name)
-	metrics_worksheet.insert_row(["ID пользователя", "Дата и время", "Метрика", "+", "-", "Участок", "Город"], 1)
+	metrics_worksheet.insert_row(["ID пользователя", "Дата и время", "Метрика", "+", "-", "Место замера", "Город"], 1)
 name = "USERDATA"
 try:
 	data_worksheet = sh.worksheet(name)
 except Exception as e:
 	sh.add_worksheet(title=name, rows="5", cols="20")
 	data_worksheet = sh.worksheet(name)
-	data_worksheet.insert_row(["ID пользователя", "Дата регистрации", "ФИО", "Номер телефона", "Город", "Участок"], 1)
+	data_worksheet.insert_row(["ID пользователя", "Дата регистрации", "ФИО", "Номер телефона", "Город", "Место замера"], 1)
 name = "LOCATIONS"
 try:
 	locations_worksheet = sh.worksheet(name)
@@ -146,7 +146,7 @@ def push_metrics_job():
 			except Exception as e:
 				sh.add_worksheet(title=name, rows="5", cols="20")
 				metr_worksheet = sh.worksheet(name)
-				metr_worksheet.insert_row(["ID пользователя", "Дата и время", "Метрика", "+", "-", "Участок", "Город"], 1)
+				metr_worksheet.insert_row(["ID пользователя", "Дата и время", "Метрика", "+", "-", "Место замера", "Город"], 1)
 			metr_worksheet.insert_row([pushes[i]["uid"], str(datetime.now())] + data_row, 2)
 			print("success")
 		except Exception as e:
@@ -247,26 +247,6 @@ def start(update, context):
 	update.message.reply_text('Введите, пожалуйста, ФИО', reply_markup=ReplyKeyboardRemove())
 
 
-def button(update, context):
-	global LOADED_DUMP
-	if not LOADED_DUMP:
-		with open("bot_data.json", encoding="utf-8") as f:
-			s = load(f)
-			for i in s:
-				context.bot_data[i] = s[i]
-			LOADED_DUMP = True
-	uid = str(update.callback_query.from_user.id)
-	if uid not in context.bot_data:
-		context.bot_data[uid] = {}
-		context.bot_data[uid]["status"] = "name"
-		context.bot_data[uid]["last_updated_location"] = str(datetime.now() - timedelta(hours=1))
-		update.message.reply_text('Нужно зарегистрироваться. Введите, пожалуйста, ФИО', reply_markup=ReplyKeyboardRemove())
-		return
-	context.bot_data[uid]["city"] = update.callback_query.data
-	context.bot_data[uid]["status"] = "place"
-	update.callback_query.edit_message_text('Введите, пожалуйста, участок')
-
-
 def texter(update, context):
 	global LOADED_DUMP
 	if not LOADED_DUMP:
@@ -284,7 +264,7 @@ def texter(update, context):
 		return
 	status = context.bot_data[uid]["status"]
 	print(status)
-	if status in ["name", "phone_number", "place"]:
+	if status in ["name", "phone_number", "city", "place"]:
 		if status == "name":
 			name = update.message.text.split()
 			if len(name) != 3 or not all(i.isalpha() for i in name):
@@ -301,9 +281,7 @@ def texter(update, context):
 				else:
 					context.bot_data[uid]["phone_number"] = phonenumbers.format_number(phone_number, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
 					context.bot_data[uid]["status"] = "city"
-					update.message.reply_text('Введите, пожалуйста, город', reply_markup=InlineKeyboardMarkup([
-						[InlineKeyboardButton(city, callback_data=city)] for city in context.bot_data["cities"]
-					]), one_time_keyboard=True)
+					update.message.reply_text('Введите, пожалуйста, город')
 			except Exception as e:
 				print(e)
 				try:
@@ -313,12 +291,14 @@ def texter(update, context):
 					else:
 						context.bot_data[uid]["phone_number"] = phonenumbers.format_number(phone_number, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
 						context.bot_data[uid]["status"] = "city"
-						update.message.reply_text('Введите, пожалуйста, город', reply_markup=InlineKeyboardMarkup([
-							[InlineKeyboardButton(city, callback_data=city)] for city in context.bot_data["cities"]
-						]), one_time_keyboard=True)
+						update.message.reply_text('Введите, пожалуйста, город')
 				except Exception as e:
 					print(e)
 					update.message.reply_text('Неверный формат номера, попробуйте ещё раз')
+		elif status == "city":
+			context.bot_data[uid]["city"] = update.callback_query.data
+			context.bot_data[uid]["status"] = "place"
+			update.callback_query.edit_message_text('Введите, пожалуйста, место замера')
 		elif status == "place":
 			context.bot_data[uid]["place"] = update.message.text
 			context.bot_data[uid]["status"] = "ready"
