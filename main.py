@@ -63,7 +63,7 @@ try:
 except Exception as e:
 	sh.add_worksheet(title=name, rows="5", cols="20")
 	data_worksheet = sh.worksheet(name)
-	data_worksheet.insert_row(["ID пользователя", "Дата регистрации", "ФИО", "Номер телефона", "Город", "Место замера"], 1)
+	data_worksheet.insert_row(["ID пользователя", "Дата регистрации", "ФИО", "Номер телефона", "Город", "Место замера", "Месяц"], 1)
 name = "LOCATIONS"
 try:
 	locations_worksheet = sh.worksheet(name)
@@ -303,7 +303,7 @@ def texter(update, context):
 			context.bot_data[uid]["place"] = update.message.text
 			context.bot_data[uid]["status"] = "ready"
 			context.bot_data[uid]["markers"] = ["М", "Ж"]
-			data_queue.put([uid, str(datetime.now()), context.bot_data[uid]["name"], context.bot_data[uid]["phone_number"], context.bot_data[uid]["city"], context.bot_data[uid]["place"]])
+			data_queue.put([uid, str(datetime.now()), context.bot_data[uid]["name"], context.bot_data[uid]["phone_number"], context.bot_data[uid]["city"], context.bot_data[uid]["place"], str(datetime.now().month)])
 			update.message.reply_text('Регистрация успешно пройдена. Спасибо!', reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"])), one_time_keyboard=True)
 	elif status == "admin":
 		text = update.message.text.split('\n')
