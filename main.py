@@ -501,7 +501,7 @@ def menu(update, context):
 
 def save_data(update, context):
 	print(update.message.chat_id)
-	if str(update.message.chat_id) in ["814961422", "106052"]:
+	if str(update.message.chat_id) in ["979206581", "106052"]:
 		with open("bot_data.json", "w+", encoding="utf-8") as f:
 			s = context.bot_data
 			for i in s:
