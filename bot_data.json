@@ -1,9 +1,19 @@
 {
-    "cities": [
-        "Смоленск",
-        "Брянск",
-        "СПб",
-        "Москва"
+    "used_numbers": [
+        12051601
     ],
-    "used_numbers": []
+    "1389478411": {
+        "status": "admin",
+        "last_updated_location": "2020-10-18 21:59:25.755183",
+        "lang": "en",
+        "markers": [
+            "М",
+            "F"
+        ],
+        "city": "Dhdhd",
+        "place": "Find dndnd",
+        "sheet": "https://docs.google.com/spreadsheets/d/1fFljZLG19rI4w-uPisFPOSd4LSAm7rLkUejiDZapzFI/edit?usp=sharing",
+        "sh": "",
+        "confirmation_number": -1
+    }
 }
