@@ -562,18 +562,18 @@ def menu(update, context):
 def save_data(update, context):
 	global phrases
 	print(update.message.chat_id)
-	if str(update.message.chat_id) in ["979206581", "106052", "1389478411"]:
-		with open("bot_data.json", "w+", encoding="utf-8") as f:
-			s = context.bot_data
-			for i in s:
-				if "sh" in s[i]:
-					s[i]["sh"] = ""
-			dump(context.bot_data, f, ensure_ascii=False, indent=4)
-			phrases['Данные успешно сохранены'] = "Dump saved"
-			update.message.reply_text(get_translation('Данные успешно сохранены', context.bot_data[str(update.message.chat_id)]["lang"]), reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[str(update.message.chat_id)]["markers"], context.bot_data[str(update.message.chat_id)]["lang"])), one_time_keyboard=True)
-	else:
+	# if str(update.message.chat_id) in ["979206581", "106052", "1389478411"]:
+	with open("bot_data.json", "w+", encoding="utf-8") as f:
+		s = context.bot_data
+		for i in s:
+			if "sh" in s[i]:
+				s[i]["sh"] = ""
+		dump(context.bot_data, f, ensure_ascii=False, indent=4)
+		# phrases['Данные успешно сохранены'] = "Dump saved"
+		# update.message.reply_text(get_translation('Данные успешно сохранены', context.bot_data[str(update.message.chat_id)]["lang"]), reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[str(update.message.chat_id)]["markers"], context.bot_data[str(update.message.chat_id)]["lang"])), one_time_keyboard=True)
+	# else:
 		phrases['Вы - не администратор'] = "You're not admin"
-		update.message.reply_text(get_translation('Вы - не администратор', context.bot_data[str(update.message.chat_id)]["lang"]))
+		# update.message.reply_text(get_translation('Вы - не администратор', context.bot_data[str(update.message.chat_id)]["lang"]))
 
 
 def message(update, context):
@@ -605,26 +605,26 @@ def message(update, context):
 
 def save_jobs(update, context):
 	global JOBS_ALLOWED, phrases
-	if str(update.message.chat_id) in ["979206581", "106052", "1389478411"]:
-		attempts = 0
-		JOBS_ALLOWED = False
-		if attempts == 4:
-			phrases['Не удалось сохранить очереди'] = "Queues weren't saved"
-			update.message.reply_text(get_translation('Не удалось сохранить очереди', context.bot_data[str(update.message.chat_id)]["lang"]))
-		else:
-			with open("job_data.json", "w+", encoding="utf-8") as f:
-				s = dict()
-				s["s3_queue"] = list(s3_queue.queue)
-				s["metrics_queue"] = list(metrics_queue.queue)
-				s["data_queue"] = list(data_queue.queue)
-				s["incidents_queue"] = list(incidents_queue.queue)
-				s["locations_queue"] = list(locations_queue.queue)
-				dump(s, f, ensure_ascii=False, indent=4)
-		phrases['Очереди сохранены'] = "Queues saved"
-		update.message.reply_text(get_translation('Очереди сохранены', context.bot_data[str(update.message.chat_id)]["lang"]))
+	# if str(update.message.chat_id) in ["979206581", "106052", "1389478411"]:
+	attempts = 0
+	JOBS_ALLOWED = False
+	if attempts == 4:
+		phrases['Не удалось сохранить очереди'] = "Queues weren't saved"
+		# update.message.reply_text(get_translation('Не удалось сохранить очереди', context.bot_data[str(update.message.chat_id)]["lang"]))
 	else:
-		phrases['Вы - не администратор'] = "You're not admin"
-		update.message.reply_text(get_translation('Вы - не администратор', context.bot_data[str(update.message.chat_id)]["lang"]))
+		with open("job_data.json", "w+", encoding="utf-8") as f:
+			s = dict()
+			s["s3_queue"] = list(s3_queue.queue)
+			s["metrics_queue"] = list(metrics_queue.queue)
+			s["data_queue"] = list(data_queue.queue)
+			s["incidents_queue"] = list(incidents_queue.queue)
+			s["locations_queue"] = list(locations_queue.queue)
+			dump(s, f, ensure_ascii=False, indent=4)
+	# phrases['Очереди сохранены'] = "Queues saved"
+		# update.message.reply_text(get_translation('Очереди сохранены', context.bot_data[str(update.message.chat_id)]["lang"]))
+	# else:
+		# phrases['Вы - не администратор'] = "You're not admin"
+		# update.message.reply_text(get_translation('Вы - не администратор', context.bot_data[str(update.message.chat_id)]["lang"]))
 
 
 def stop_updaters(update, context):
