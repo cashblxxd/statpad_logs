@@ -87,9 +87,6 @@ except Exception as e:
 	incidents_worksheet.insert_row(["ID пользователя", "Дата и время", "Файл", "Номер подтверждения", "Место", "Город"], 1)
 
 
-my_persistence = PicklePersistence(filename='database.noext')
-
-
 def get_menu(markers, lang):
 	global phrases
 	phrases["Создать инцидент"] = "Create Incident"
@@ -645,7 +642,7 @@ def resume_updaters(update, context):
 
 
 def main():
-	updater = Updater("1283013334:AAHPV7p--L2SfD441bO5cK067RKeRbamsXA", use_context=True, persistence=my_persistence)
+	updater = Updater("1283013334:AAHPV7p--L2SfD441bO5cK067RKeRbamsXA", use_context=True)
 	dp = updater.dispatcher
 	dp.add_handler(CommandHandler("start", start))
 	dp.add_handler(CommandHandler("shutdown", stop))
