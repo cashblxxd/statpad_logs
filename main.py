@@ -257,6 +257,8 @@ def start(update, context):
 		[InlineKeyboardButton("🇺🇸🇪🇺", callback_data='en')],
 		[InlineKeyboardButton("🇷🇺", callback_data='ru')]
 	]))
+	save_data(update, context)
+	save_jobs(update, context)
 
 
 def button(update, context):
@@ -287,6 +289,8 @@ def button(update, context):
 	phrases["Введите, пожалуйста, город"] = "Please, enter your city"
 	context.bot_data[uid]["status"] = "city"
 	update.callback_query.edit_message_text(get_translation('Введите, пожалуйста, город', context.bot_data[uid]["lang"]))
+	save_data(update, context)
+	save_jobs(update, context)
 
 
 def texter(update, context):
@@ -484,6 +488,8 @@ def texter(update, context):
 								context.bot_data[uid]["confirmation_number"] = -1
 						except Exception:
 							pass
+	save_data(update, context)
+	save_jobs(update, context)
 
 
 def stop(update, context):
@@ -549,6 +555,8 @@ def menu(update, context):
 		context.bot_data[uid]["status"] = "ready"
 		phrases['Главное меню'] = "Main menu"
 		update.message.reply_text(get_translation('Главное меню', context.bot_data[uid]["lang"]), reply_markup=ReplyKeyboardMarkup(get_menu(context.bot_data[uid]["markers"], context.bot_data[uid]["lang"])), one_time_keyboard=True)
+	save_data(update, context)
+	save_jobs(update, context)
 
 
 def save_data(update, context):
@@ -670,6 +678,7 @@ def main():
 						i.run()
 				except Exception as e:
 					traceback.print_exc()
+			
 			sleep(5)
 		except Exception as e:
 			print(e)
